@@ -48,7 +48,7 @@
  *       return FALSE;
  *     }
  *
- *   g_autoptr(JsonNode) root = json_parser_get_root (parser);
+ *   JsonNode *root = json_parser_get_root (parser);
  *
  *   // manipulate the object tree from the root node
  *
@@ -57,7 +57,7 @@
  * ```
  *
  * By default, the entire process of loading the data and parsing it is
- * synchronous; the [method@Json.Parser.load_from_stream_async()] API will
+ * synchronous; the [method@Json.Parser.load_from_stream_async] API will
  * load the data asynchronously, but parse it in the main context as the
  * signals of the parser must be emitted in the same thread. If you do
  * not use signals, and you wish to also parse the JSON data without blocking,
@@ -93,6 +93,7 @@ struct _JsonParserPrivate
   guint has_assignment : 1;
   guint is_filename    : 1;
   guint is_immutable   : 1;
+  guint is_strict      : 1;
 };
 
 enum
@@ -115,6 +116,7 @@ static guint parser_signals[LAST_SIGNAL] = { 0, };
 enum
 {
   PROP_IMMUTABLE = 1,
+  PROP_STRICT,
   PROP_LAST
 };
 
@@ -141,6 +143,112 @@ json_parser_clear (JsonParser *parser)
   g_clear_pointer (&priv->variable_name, g_free);
   g_clear_pointer (&priv->last_error, g_error_free);
   g_clear_pointer (&priv->root, json_node_unref);
+}
+
+static inline void
+json_parser_emit_array_start (JsonParser *parser)
+{
+  JsonParserClass *klass = JSON_PARSER_GET_CLASS (parser);
+
+  if (g_signal_has_handler_pending (parser, parser_signals[ARRAY_START], 0, FALSE))
+    g_signal_emit (parser, parser_signals[ARRAY_START], 0);
+  else if (klass->array_start != NULL)
+    klass->array_start (parser);
+}
+
+static inline void
+json_parser_emit_array_element (JsonParser *parser,
+                                JsonArray  *array,
+                                guint       idx)
+{
+  JsonParserClass *klass = JSON_PARSER_GET_CLASS (parser);
+
+  if (g_signal_has_handler_pending (parser, parser_signals[ARRAY_ELEMENT], 0, FALSE))
+    g_signal_emit (parser, parser_signals[ARRAY_ELEMENT], 0, array, idx);
+  else if (klass->array_element != NULL)
+    klass->array_element (parser, array, idx);
+}
+
+static inline void
+json_parser_emit_array_end (JsonParser *parser,
+                            JsonArray  *array)
+{
+  JsonParserClass *klass = JSON_PARSER_GET_CLASS (parser);
+
+  if (g_signal_has_handler_pending (parser, parser_signals[ARRAY_END], 0, FALSE))
+    g_signal_emit (parser, parser_signals[ARRAY_END], 0, array);
+  else if (klass->array_end != NULL)
+    klass->array_end (parser, array);
+}
+
+static inline void
+json_parser_emit_object_start (JsonParser *parser)
+{
+  JsonParserClass *klass = JSON_PARSER_GET_CLASS (parser);
+
+  if (g_signal_has_handler_pending (parser, parser_signals[OBJECT_START], 0, FALSE))
+    g_signal_emit (parser, parser_signals[OBJECT_START], 0);
+  else if (klass->object_start != NULL)
+    klass->object_start (parser);
+}
+
+static inline void
+json_parser_emit_object_member (JsonParser *parser,
+                                JsonObject *object,
+                                const char *name)
+{
+  JsonParserClass *klass = JSON_PARSER_GET_CLASS (parser);
+
+  if (g_signal_has_handler_pending (parser, parser_signals[OBJECT_MEMBER], 0, FALSE))
+    g_signal_emit (parser, parser_signals[OBJECT_MEMBER], 0, object, name);
+  else if (klass->object_member != NULL)
+    klass->object_member (parser, object, name);
+}
+
+static inline void
+json_parser_emit_object_end (JsonParser *parser,
+                             JsonObject *object)
+{
+  JsonParserClass *klass = JSON_PARSER_GET_CLASS (parser);
+
+  if (g_signal_has_handler_pending (parser, parser_signals[OBJECT_END], 0, FALSE))
+    g_signal_emit (parser, parser_signals[OBJECT_END], 0, object);
+  else if (klass->object_end != NULL)
+    klass->object_end (parser, object);
+}
+
+static inline void
+json_parser_emit_error (JsonParser *parser,
+                        GError     *error)
+{
+  JsonParserClass *klass = JSON_PARSER_GET_CLASS (parser);
+
+  if (g_signal_has_handler_pending (parser, parser_signals[ERROR], 0, FALSE))
+    g_signal_emit (parser, parser_signals[ERROR], 0, error);
+  else if (klass->error != NULL)
+    klass->error (parser, error);
+}
+
+static inline void
+json_parser_emit_parse_start (JsonParser *parser)
+{
+  JsonParserClass *klass = JSON_PARSER_GET_CLASS (parser);
+
+  if (g_signal_has_handler_pending (parser, parser_signals[PARSE_START], 0, FALSE))
+    g_signal_emit (parser, parser_signals[PARSE_START], 0);
+  else if (klass->parse_start != NULL)
+    klass->parse_start (parser);
+}
+
+static inline void
+json_parser_emit_parse_end (JsonParser *parser)
+{
+  JsonParserClass *klass = JSON_PARSER_GET_CLASS (parser);
+
+  if (g_signal_has_handler_pending (parser, parser_signals[PARSE_END], 0, FALSE))
+    g_signal_emit (parser, parser_signals[PARSE_END], 0);
+  else if (klass->parse_end != NULL)
+    klass->parse_end (parser);
 }
 
 static void
@@ -176,6 +284,12 @@ json_parser_set_property (GObject      *gobject,
       /* Construct-only. */
       priv->is_immutable = g_value_get_boolean (value);
       break;
+
+    case PROP_STRICT:
+      json_parser_set_strict (JSON_PARSER (gobject),
+                              g_value_get_boolean (value));
+      break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (gobject, prop_id, pspec);
       break;
@@ -195,6 +309,11 @@ json_parser_get_property (GObject    *gobject,
     case PROP_IMMUTABLE:
       g_value_set_boolean (value, priv->is_immutable);
       break;
+
+    case PROP_STRICT:
+      g_value_set_boolean (value, priv->is_strict);
+      break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (gobject, prop_id, pspec);
       break;
@@ -223,11 +342,22 @@ json_parser_class_init (JsonParserClass *klass)
    * Since: 1.2
    */
   parser_props[PROP_IMMUTABLE] =
-    g_param_spec_boolean ("immutable",
-                          "Immutable Output",
-                          "Whether the parser output is immutable.",
+    g_param_spec_boolean ("immutable", NULL, NULL,
                           FALSE,
                           G_PARAM_CONSTRUCT_ONLY | G_PARAM_READWRITE);
+
+  /**
+   * JsonParser:strict:
+   *
+   * Whether the parser should be strictly conforming to the
+   * JSON format, or allow custom extensions like comments.
+   *
+   * Since: 1.10
+   */
+  parser_props[PROP_STRICT] =
+    g_param_spec_boolean ("strict", NULL, NULL, FALSE,
+                          G_PARAM_READWRITE |
+                          G_PARAM_EXPLICIT_NOTIFY);
 
   g_object_class_install_properties (gobject_class, PROP_LAST, parser_props);
 
@@ -236,6 +366,9 @@ json_parser_class_init (JsonParserClass *klass)
    * @parser: the parser that emitted the signal
    * 
    * This signal is emitted when a parser starts parsing a JSON data stream.
+   *
+   * Deprecated: 1.10: Derive your own parser type from `JsonParser` and
+   *   override the [vfunc@Json.Parser.parse_start] virtual function
    */
   parser_signals[PARSE_START] =
     g_signal_new ("parse-start",
@@ -250,7 +383,10 @@ json_parser_class_init (JsonParserClass *klass)
    * @parser: the parser that emitted the signal
    *
    * This signal is emitted when a parser successfully finished parsing a
-   * JSON data stream
+   * JSON data stream.
+   *
+   * Deprecated: 1.10: Derive your own parser type from `JsonParser` and
+   *   override the [vfunc@Json.Parser.parse_end] virtual function
    */
   parser_signals[PARSE_END] =
     g_signal_new ("parse-end",
@@ -264,6 +400,9 @@ json_parser_class_init (JsonParserClass *klass)
    * @parser: the parser that emitted the signal
    *
    * This signal is emitted each time a parser starts parsing a JSON object.
+   *
+   * Deprecated: 1.10: Derive your own parser type from `JsonParser` and
+   *   override the [vfunc@Json.Parser.object_start] virtual function
    */
   parser_signals[OBJECT_START] =
     g_signal_new ("object-start",
@@ -279,7 +418,10 @@ json_parser_class_init (JsonParserClass *klass)
    * @member_name: the name of the newly parsed member
    *
    * The `::object-member` signal is emitted each time a parser
-   * has successfully parsed a single member of a JSON object
+   * has successfully parsed a single member of a JSON object.
+   *
+   * Deprecated: 1.10: Derive your own parser type from `JsonParser` and
+   *   override the [vfunc@Json.Parser.object_member] virtual function
    */
   parser_signals[OBJECT_MEMBER] =
     g_signal_new ("object-member",
@@ -297,6 +439,9 @@ json_parser_class_init (JsonParserClass *klass)
    *
    * The `::object-end` signal is emitted each time a parser
    * has successfully parsed an entire JSON object.
+   *
+   * Deprecated: 1.10: Derive your own parser type from `JsonParser` and
+   *   override the [vfunc@Json.Parser.object_end] virtual function
    */
   parser_signals[OBJECT_END] =
     g_signal_new ("object-end",
@@ -312,6 +457,9 @@ json_parser_class_init (JsonParserClass *klass)
    *
    * The `::array-start` signal is emitted each time a parser
    * starts parsing a JSON array.
+   *
+   * Deprecated: 1.10: Derive your own parser type from `JsonParser` and
+   *   override the [vfunc@Json.Parser.array_start] virtual function
    */
   parser_signals[ARRAY_START] =
     g_signal_new ("array-start",
@@ -328,6 +476,9 @@ json_parser_class_init (JsonParserClass *klass)
    *
    * The `::array-element` signal is emitted each time a parser
    * has successfully parsed a single element of a JSON array.
+   *
+   * Deprecated: 1.10: Derive your own parser type from `JsonParser` and
+   *   override the [vfunc@Json.Parser.array_element] virtual function
    */
   parser_signals[ARRAY_ELEMENT] =
     g_signal_new ("array-element",
@@ -345,6 +496,9 @@ json_parser_class_init (JsonParserClass *klass)
    *
    * The `::array-end` signal is emitted each time a parser
    * has successfully parsed an entire JSON array.
+   *
+   * Deprecated: 1.10: Derive your own parser type from `JsonParser` and
+   *   override the [vfunc@Json.Parser.array_end] virtual function
    */
   parser_signals[ARRAY_END] =
     g_signal_new ("array-end",
@@ -361,6 +515,9 @@ json_parser_class_init (JsonParserClass *klass)
    *
    * The `::error` signal is emitted each time a parser encounters
    * an error in a JSON stream.
+   *
+   * Deprecated: 1.10: Derive your own parser type from `JsonParser` and
+   *   override the [vfunc@Json.Parser.error] virtual function
    */
   parser_signals[ERROR] =
     g_signal_new ("error",
@@ -400,21 +557,6 @@ json_parse_value (JsonParser   *parser,
 {
   JsonParserPrivate *priv = parser->priv;
   JsonNode *current_node = priv->current_node;
-  gboolean is_negative = FALSE;
-
-  if (token == '-')
-    {
-      guint next_token = json_scanner_peek_next_token (scanner);
-
-      if (next_token == JSON_TOKEN_INT ||
-          next_token == JSON_TOKEN_FLOAT)
-        {
-           is_negative = TRUE;
-           token = json_scanner_get_next_token (scanner);
-        }
-      else
-        return JSON_TOKEN_INT;
-    }
 
   switch (token)
     {
@@ -422,10 +564,8 @@ json_parse_value (JsonParser   *parser,
       {
         gint64 value = json_scanner_get_int64_value (scanner);
 
-        JSON_NOTE (PARSER, "abs(node): %" G_GINT64_FORMAT " (sign: %s)",
-                   value,
-                   is_negative ? "negative" : "positive");
-        *node = json_node_init_int (json_node_alloc (), is_negative ? value * -1 : value);
+        JSON_NOTE (PARSER, "node: %" G_GINT64_FORMAT, value);
+        *node = json_node_init_int (json_node_alloc (), value);
       }
       break;
 
@@ -433,11 +573,8 @@ json_parse_value (JsonParser   *parser,
       {
         double value = json_scanner_get_float_value (scanner);
 
-        JSON_NOTE (PARSER, "abs(node): %.6f (sign: %s)",
-                   value,
-                   is_negative ? "negative" : "positive");
-
-        *node = json_node_init_double (json_node_alloc (), is_negative ? value * -1.0 : value);
+        JSON_NOTE (PARSER, "abs(node): %.6f", value);
+        *node = json_node_init_double (json_node_alloc (), value);
       }
       break;
 
@@ -528,7 +665,7 @@ json_parse_array (JsonParser    *parser,
   token = json_scanner_get_next_token (scanner);
   g_assert (token == JSON_TOKEN_LEFT_BRACE);
 
-  g_signal_emit (parser, parser_signals[ARRAY_START], 0);
+  json_parser_emit_array_start (parser);
 
   idx = 0;
   while (token != JSON_TOKEN_RIGHT_BRACE)
@@ -608,9 +745,7 @@ json_parse_array (JsonParser    *parser,
         json_node_seal (element);
       json_array_add_element (array, element);
 
-      g_signal_emit (parser, parser_signals[ARRAY_ELEMENT], 0,
-                     array,
-                     idx);
+      json_parser_emit_array_element (parser, array, idx);
 
       idx += 1;
       token = next_token;
@@ -627,7 +762,7 @@ array_done:
     json_node_seal (priv->current_node);
   json_node_set_parent (priv->current_node, old_current);
 
-  g_signal_emit (parser, parser_signals[ARRAY_END], 0, array);
+  json_parser_emit_array_end (parser, array);
 
   if (node != NULL && *node == NULL)
     *node = priv->current_node;
@@ -662,7 +797,7 @@ json_parse_object (JsonParser    *parser,
   token = json_scanner_get_next_token (scanner);
   g_assert (token == JSON_TOKEN_LEFT_CURLY);
 
-  g_signal_emit (parser, parser_signals[OBJECT_START], 0);
+  json_parser_emit_object_start (parser);
 
   while (token != JSON_TOKEN_RIGHT_CURLY)
     {
@@ -799,9 +934,7 @@ json_parse_object (JsonParser    *parser,
         json_node_seal (member);
       json_object_set_member (object, name, member);
 
-      g_signal_emit (parser, parser_signals[OBJECT_MEMBER], 0,
-                     object,
-                     name);
+      json_parser_emit_object_member (parser, object, name);
 
       g_free (name);
 
@@ -818,7 +951,7 @@ json_parse_object (JsonParser    *parser,
     json_node_seal (priv->current_node);
   json_node_set_parent (priv->current_node, old_current);
 
-  g_signal_emit (parser, parser_signals[OBJECT_END], 0, object);
+  json_parser_emit_object_end (parser, object);
 
   if (node != NULL && *node == NULL)
     *node = priv->current_node;
@@ -839,10 +972,24 @@ json_parse_statement (JsonParser  *parser,
   switch (token)
     {
     case JSON_TOKEN_LEFT_CURLY:
+      if (priv->is_strict && priv->root != NULL)
+        {
+          JSON_NOTE (PARSER, "Only one top level object is possible");
+          json_scanner_get_next_token (scanner);
+          priv->error_code = JSON_PARSER_ERROR_INVALID_STRUCTURE;
+          return JSON_TOKEN_EOF;
+        }
       JSON_NOTE (PARSER, "Statement is object declaration");
       return json_parse_object (parser, scanner, &priv->root, 0);
 
     case JSON_TOKEN_LEFT_BRACE:
+      if (priv->is_strict && priv->root != NULL)
+        {
+          JSON_NOTE (PARSER, "Only one top level array is possible");
+          json_scanner_get_next_token (scanner);
+          priv->error_code = JSON_PARSER_ERROR_INVALID_STRUCTURE;
+          return JSON_TOKEN_EOF;
+        }
       JSON_NOTE (PARSER, "Statement is array declaration");
       return json_parse_array (parser, scanner, &priv->root, 0);
 
@@ -857,6 +1004,13 @@ json_parse_statement (JsonParser  *parser,
         gchar *name;
 
         JSON_NOTE (PARSER, "Statement is an assignment");
+
+        if (priv->is_strict)
+          {
+            json_scanner_get_next_token (scanner);
+            priv->error_code = JSON_PARSER_ERROR_INVALID_ASSIGNMENT;
+            return JSON_TOKEN_EOF;
+          }
 
         /* swallow the 'var' token... */
         token = json_scanner_get_next_token (scanner);
@@ -949,15 +1103,17 @@ json_scanner_msg_handler (JsonScanner *scanner,
                message);
       
   parser->priv->last_error = error;
-  g_signal_emit (parser, parser_signals[ERROR], 0, error);
+
+  json_parser_emit_error (parser, error);
 }
 
 static JsonScanner *
 json_scanner_create (JsonParser *parser)
 {
+  JsonParserPrivate *priv = json_parser_get_instance_private (parser);
   JsonScanner *scanner;
 
-  scanner = json_scanner_new ();
+  scanner = json_scanner_new (priv->is_strict);
   json_scanner_set_msg_handler (scanner, json_scanner_msg_handler, parser);
 
   return scanner;
@@ -1004,7 +1160,16 @@ json_parser_load (JsonParser   *parser,
   JsonScanner *scanner;
   gboolean done;
   gboolean retval = TRUE;
-  const gchar *data = input_data;
+  const char *data = input_data;
+
+  if (priv->is_strict && (length == 0 || data == NULL || *data == '\0'))
+    {
+      g_set_error_literal (error, JSON_PARSER_ERROR,
+                           JSON_PARSER_ERROR_INVALID_DATA,
+                           "JSON data must not be empty");
+      json_parser_emit_error (parser, *error);
+      return FALSE;
+    }
 
   json_parser_clear (parser);
 
@@ -1013,7 +1178,7 @@ json_parser_load (JsonParser   *parser,
       g_set_error_literal (error, JSON_PARSER_ERROR,
                            JSON_PARSER_ERROR_INVALID_DATA,
                            _("JSON data must be UTF-8 encoded"));
-      g_signal_emit (parser, parser_signals[ERROR], 0, *error);
+      json_parser_emit_error (parser, *error);
       return FALSE;
     }
 
@@ -1028,6 +1193,36 @@ json_parser_load (JsonParser   *parser,
            data += 3;
            length -= 3;
          }
+
+       if (priv->is_strict && length == 0)
+         {
+           g_set_error_literal (error, JSON_PARSER_ERROR,
+                                JSON_PARSER_ERROR_INVALID_DATA,
+                                "JSON data must not be empty after BOM character");
+           json_parser_emit_error (parser, *error);
+           return FALSE;
+         }
+    }
+
+  /* Skip leading space */
+  if (priv->is_strict)
+    {
+      const char *p = data;
+      while (length > 0 && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n'))
+        {
+          length -= 1;
+          data += 1;
+          p = data;
+        }
+
+      if (length == 0)
+        {
+          g_set_error_literal (error, JSON_PARSER_ERROR,
+                               JSON_PARSER_ERROR_INVALID_DATA,
+                               "JSON data must not be empty after leading whitespace");
+          json_parser_emit_error (parser, *error);
+          return FALSE;
+        }
     }
 
   scanner = json_scanner_create (parser);
@@ -1035,7 +1230,7 @@ json_parser_load (JsonParser   *parser,
 
   priv->scanner = scanner;
 
-  g_signal_emit (parser, parser_signals[PARSE_START], 0);
+  json_parser_emit_parse_start (parser);
 
   done = FALSE;
   while (!done)
@@ -1070,7 +1265,7 @@ json_parser_load (JsonParser   *parser,
         }
     }
 
-  g_signal_emit (parser, parser_signals[PARSE_END], 0);
+  json_parser_emit_parse_end (parser);
 
   /* remove the scanner */
   json_scanner_destroy (scanner);
@@ -1587,4 +1782,56 @@ json_parser_load_from_stream_async (JsonParser          *parser,
 
   g_task_run_in_thread (task, read_from_stream);
   g_object_unref (task);
+}
+
+/**
+ * json_parser_set_strict:
+ * @parser: the JSON parser
+ * @strict: whether the parser should be strict
+ *
+ * Sets whether the parser should operate in strict mode.
+ *
+ * If @strict is true, `JsonParser` will strictly conform to
+ * the JSON format.
+ *
+ * If @strict is false, `JsonParser` will allow custom extensions
+ * to the JSON format, like comments.
+ *
+ * Since: 1.10
+ */
+void
+json_parser_set_strict (JsonParser *parser,
+                        gboolean    strict)
+{
+  g_return_if_fail (JSON_IS_PARSER (parser));
+
+  JsonParserPrivate *priv = json_parser_get_instance_private (parser);
+
+  strict = !!strict;
+
+  if (priv->is_strict != strict)
+    {
+      priv->is_strict = strict;
+      g_object_notify_by_pspec (G_OBJECT (parser), parser_props[PROP_STRICT]);
+    }
+}
+
+/**
+ * json_parser_get_strict:
+ * @parser: the JSON parser
+ *
+ * Retrieves whether the parser is operating in strict mode.
+ *
+ * Returns: true if the parser is strict, and false otherwise
+ *
+ * Since: 1.10
+ */
+gboolean
+json_parser_get_strict (JsonParser *parser)
+{
+  g_return_val_if_fail (JSON_IS_PARSER (parser), FALSE);
+
+  JsonParserPrivate *priv = json_parser_get_instance_private (parser);
+
+  return priv->is_strict;
 }

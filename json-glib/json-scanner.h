@@ -31,6 +31,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <glib.h>
 
 G_BEGIN_DECLS
@@ -46,8 +47,6 @@ typedef enum
 {
   JSON_TOKEN_EOF		=   0,
 
-  JSON_TOKEN_LEFT_PAREN		= '(',
-  JSON_TOKEN_RIGHT_PARE		= ')',
   JSON_TOKEN_LEFT_CURLY		= '{',
   JSON_TOKEN_RIGHT_CURLY	= '}',
   JSON_TOKEN_LEFT_BRACE		= '[',
@@ -79,7 +78,7 @@ typedef enum
 } JsonTokenType;
 
 G_GNUC_INTERNAL
-JsonScanner *json_scanner_new                  (void);
+JsonScanner *json_scanner_new                  (bool strict);
 G_GNUC_INTERNAL
 void         json_scanner_destroy              (JsonScanner *scanner);
 G_GNUC_INTERNAL
